@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<title>Web Audio API Trial: Success Example</title>
+
+<!-- <link rel="stylesheet" href="style.css" /> -->
+
+<script>
+'use strict';
+window.addEventListener('DOMContentLoaded', (event) => {
+    //【注意】
+    // ユーザー操作以前に作成されたAudioContextだとMediaElementSource(HTMLMediaElement)を接続してもうまく動作しない
+    // [Chromeの警告] The AudioContext was not allowed to start. It must be resumed (or created) after a user gesture on the page. https://goo.gl/7K7WLu
+    // →最初のユーザー操作を捉えてそのタイミングで作成
+    const
+        initAudioContext = () => {
+            // iOSの場合、ユーザー操作後にAudioContextを使用して一度音声を再生しておく必要がある模様
+            // 参考: [iOSでのオーディオ再生制限の解除方法いろいろ - Qiita](https://qiita.com/pentamania/items/2c568a9ec52148bbfd08)
+            // →1フレームの無音再生で対応
+            const
+                audioContext = new (window.AudioContext || window.webkitAudioContext),
+                audioSource = audioContext.createBufferSource();
+            
+            audioSource.buffer = audioContext.createBuffer(1, 1, 22050); // 1フレームの無音バッファ
+            audioSource.connect(audioContext.destination);
+            audioSource.start(0);
+            return audioContext;
+        };
+    
+    const
+        audioPlayer = document.querySelector('#player'),
+        onUserAction = (() => {
+            let audioContext,
+                audioSource,
+                userActioned = false;
+            
+            return (event) => {
+                console.log(`"${event.type}" event:`, event);
+                
+                if (userActioned) return;
+                //【注意】既にMediaElementSourceNodeに接続されているHTMLMediaElementについては再度createMediaElementSource()することはできない
+                // [Chromeのエラー] Failed to execute 'createMediaElementSource' on 'AudioContext': HTMLMediaElement already connected previously to a different MediaElementSourceNode.
+                
+                userActioned = true;
+                audioPlayer.removeEventListener('play', onUserAction);
+                document.removeEventListener('touchstart', onUserAction);
+                
+                audioContext = initAudioContext();
+                audioSource = audioContext.createMediaElementSource(audioPlayer);
+                audioSource.connect(audioContext.destination);
+                console.log('Cconnected audioSource to audioContext.destination');
+            };
+        })();
+    
+    audioPlayer.addEventListener('play', onUserAction);
+    document.addEventListener('touchstart', onUserAction);
+});
+</script>
+</head>
+<body>
+
+<header>
+<h1>Web Audio API Trial: Success Example</h1>
+</header>
+
+<main>
+<audio id="player" src="../media/n142.mp3" controls preload="metadata" crossorigin="anonymous"></audio>
+<p class="credit">Sample music: "<a href="http://www.hmix.net/music_gallery/music_top.htm">Overture!</a>" by <a href="http://www.hmix.net/">H/MIX GALLERY</a></p>
+</main>
+
+</body>
+</html>

@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<title>Audio Visualizer Example</title>
+
+<style>
+html {
+    height: 100%;
+}
+
+body {
+    height: 100%;
+    color: white;
+    background: gray;
+    text-align: left;
+    font-family: "Helvetica Neue", "Helvetica", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Arial", "Yu Gothic", "Meiryo", sans-serif;
+    font-weight: normal;
+    line-height: 1.1;
+}
+
+a {
+    color: white;
+    text-decoration: none;
+}
+
+header {
+    position: relative;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 0;
+}
+
+main {
+    position: relative;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 0;
+}
+
+#visualizer {
+    width: 100%;
+    height: auto;
+}
+
+.credit {
+    font-size: 85%;
+}
+</style>
+
+<script>
+'use strict';
+window.addEventListener('DOMContentLoaded', (event) => {
+    const
+        audioConfig = {
+            analyserFftSize: 32, // 32(2^5)～32768(2^15)
+            initialMainGainValue: 1.0,
+            initialLeftGainValue: 0.1,
+            initialRightGainValue: 0.1,
+        },
+        visualizerCanvasConfig = {
+            width: 510,
+            height: 510,
+            backgroundColor: 'rgb(0, 47, 34)',
+            barFillColor: 'rgb(0, 255, 184)',
+            messageColor: 'rgb(128, 128, 128)',
+            initialDisplayType: 'standard', // 'standard' / 'both-channels'
+        };
+    
+    const
+        self = undefined,
+        
+        extRound = (number, numDigits=0) => Math.round(number * Math.pow(10, numDigits)) / Math.pow(10, numDigits),
+        
+        visualizerCanvas = document.querySelector('#visualizer'),
+        
+        {initialDisplayType} = (() => {
+            const
+                initialDisplayType = visualizerCanvasConfig.initialDisplayType;
+            
+            document.querySelector(`[name="displaytype"][value="${initialDisplayType}"]`).setAttribute('checked', true);
+            return {initialDisplayType};
+        })(),
+        
+        {audioPlayer} = (() => {
+            const
+                audioPlayer = document.querySelector('#player');
+            
+            return {audioPlayer};
+        })(),
+        
+        {audioFileReader} = (({visualizerCanvas, audioPlayer}) => {
+            const
+                audioFileReader = new FileReader,
+                
+                audioNodeController = new class {
+                    constructor({audioConfig, audioPlayer}) {
+                        const
+                            self = this;
+                        
+                        self.audioConfig = audioConfig;
+                        self.audioPlayer = audioPlayer;
+                        
+                        //【注意】HTMLMediaElement（Audio/Video等）に対してcreateMediaElementSource()を使用する場合、ユーザー操作前にAudioContextを作成してしまうと（Firefox以外で）うまく動作しなくなってしまう
+                        // →初回のユーザー操作後に作成することで対応
+                        self.userActioned = false;
+                        self.bindedOnUserAction = self.onUserAction.bind(self);
+                        document.addEventListener('touchstart', self.bindedOnUserAction);
+                        audioPlayer.addEventListener('play', self.bindedOnUserAction);
+                    }
+                    
+                    onUserAction(event) {
+                        console.log('*** onUserAction()', event);
+                        const
+                            self = this,
+                            audioConfig = self.audioConfig,
+                            audioPlayer = self.audioPlayer;
+                        
+                        document.removeEventListener('touchstart', self.bindedOnUserAction);
+                        audioPlayer.removeEventListener('play', self.bindedOnUserAction);
+                        
+                        if (self.userActioned) return;
+                        self.userActioned = true;
+                        
+                        const
+                            audioContext = (() => {
+                                // iOSの場合、ユーザー操作後にAudioContextを使用して一度音声を再生しておく必要がある模様
+                                // 参考: [iOSでのオーディオ再生制限の解除方法いろいろ - Qiita](https://qiita.com/pentamania/items/2c568a9ec52148bbfd08)
+                                // →1フレームの無音再生で対応
+                                const
+                                    audioContext = new (window.AudioContext || window.webkitAudioContext),
+                                    audioSource = audioContext.createBufferSource();
+                                audioSource.buffer = audioContext.createBuffer(1, 1, 22050); // 1フレームの無音バッファ
+                                audioSource.connect(audioContext.destination);
+                                audioSource.start(0);
+                                return audioContext;
+                            })(),
+                            audioSplitter = audioContext.createChannelSplitter(2),
+                            audioMerger = audioContext.createChannelMerger(2),
+                            audioMainGain = audioContext.createGain(),
+                            audioLeftGain = audioContext.createGain(),
+                            audioRightGain = audioContext.createGain(),
+                            audioBothAnalyser = audioContext.createAnalyser(),
+                            audioLeftAnalyser = audioContext.createAnalyser(),
+                            audioRightAnalyser = audioContext.createAnalyser(),
+                            audioMediaElementSource = audioContext.createMediaElementSource(audioPlayer);
+                        
+                        audioBothAnalyser.fftSize = audioLeftAnalyser.fftSize = audioRightAnalyser.fftSize = audioConfig.analyserFftSize;
+                        audioMainGain.gain.value = audioConfig.initialMainGainValue;
+                        audioLeftGain.gain.value = audioConfig.initialLeftGainValue;
+                        audioRightGain.gain.value = audioConfig.initialRightGainValue;
+                        
+                        Object.assign(self, {
+                            audioContext,
+                            audioSplitter,
+                            audioMerger,
+                            audioGains: {
+                                main: audioMainGain,
+                                left: audioLeftGain,
+                                right: audioRightGain,
+                            },
+                            audioAnalysers: {
+                                both: audioBothAnalyser,
+                                left: audioLeftAnalyser,
+                                right: audioRightAnalyser,
+                            },
+                            audioMediaElementSource,
+                        });
+                        
+                        self.updateConnections();
+                    }
+                    
+                    updateConnections = () => {
+                        const
+                            self = this,
+                            {audioContext, audioSplitter, audioMerger, audioGains, audioAnalysers, audioMediaElementSource} = self;
+                        
+                        try {
+                            if (1 < audioMediaElementSource.channelCount) {
+                                audioMediaElementSource.connect(audioSplitter);
+                                audioSplitter.connect(audioGains.left, 0);
+                                audioSplitter.connect(audioGains.right, 1);
+                            }
+                            else {
+                                audioMediaElementSource.connect(audioGains.left);
+                                audioMediaElementSource.connect(audioGains.right);
+                            }
+                            audioGains.left.connect(audioAnalysers.left);
+                            audioGains.right.connect(audioAnalysers.right);
+                            audioAnalysers.left.connect(audioMerger, 0, 0);
+                            audioAnalysers.right.connect(audioMerger, 0, 1);
+                            audioMerger.connect(audioGains.main);
+                            audioGains.main.connect(audioAnalysers.both);
+                            audioAnalysers.both.connect(audioContext.destination);
+                        }
+                        catch (error) {
+                            console.log(error);
+                        }
+                    }
+                }({audioConfig, audioPlayer}),
+                
+                {visualizerCanvasContext, barWidthPerFrequencyData, barHeightPerDecibelValue} = (() => {
+                    const
+                        visualizerCanvasContext = visualizerCanvas.getContext('2d'),
+                        barWidthPerFrequencyData = visualizerCanvasConfig.height / (audioConfig.analyserFftSize / 2),
+                        barHeightPerDecibelValue = visualizerCanvasConfig.width / 255;
+                    
+                    visualizerCanvas.setAttribute('width', visualizerCanvasConfig.width);
+                    visualizerCanvas.setAttribute('height', visualizerCanvasConfig.height);
+                    visualizerCanvas.style.backgroundColor = visualizerCanvasConfig.backgroundColor;
+                    
+                    return {visualizerCanvas, visualizerCanvasContext, barWidthPerFrequencyData, barHeightPerDecibelValue};
+                })();
+            
+            let animationId = null,
+                displayType = visualizerCanvasConfig.initialDisplayType;
+            
+            const
+                clearCanvas = () => {
+                    visualizerCanvasContext.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+                },
+                
+                showMessage = (message) => {
+                    clearCanvas();
+                    Object.assign(visualizerCanvasContext, {
+                        font: '32px serif',
+                        fillStyle: visualizerCanvasConfig.messageColor,
+                        textAlign: 'center',
+                        textBaseline: 'middle',
+                    });
+                    visualizerCanvasContext.fillText(message, visualizerCanvas.width / 2, visualizerCanvas.height / 2);
+                },
+                
+                resetVisualizer = () => {
+                    clearCanvas();
+                    try {
+                        cancelAnimationFrame(animationId);
+                    }
+                    catch (error) {
+                        console.error(error);
+                    }
+                    animationId = null;
+                },
+                renderVisualizer = () => {
+                    const
+                        audioAnalysers = audioNodeController.audioAnalysers,
+                        frequencyDataArrays = {
+                            both: new Uint8Array(audioAnalysers.both.frequencyBinCount),
+                            left: new Uint8Array(audioAnalysers.left.frequencyBinCount),
+                            right: new Uint8Array(audioAnalysers.right.frequencyBinCount),
+                        };
+                    
+                    audioAnalysers.both.getByteFrequencyData(frequencyDataArrays.both);
+                    audioAnalysers.left.getByteFrequencyData(frequencyDataArrays.left);
+                    audioAnalysers.right.getByteFrequencyData(frequencyDataArrays.right);
+                    
+                    clearCanvas();
+                    
+                    switch (displayType) {
+                        case 'both-channels': {
+                            frequencyDataArrays.left.map((frequencyData, index) => {
+                                visualizerCanvasContext.fillStyle = visualizerCanvasConfig.barFillColor;
+                                visualizerCanvasContext.fillRect(
+                                    visualizerCanvas.width / 2 - frequencyData * barHeightPerDecibelValue / 2,
+                                    visualizerCanvas.height - (index + 0.9) * barWidthPerFrequencyData,
+                                    frequencyData * barHeightPerDecibelValue / 2,
+                                    barWidthPerFrequencyData * 0.8,
+                                );
+                            });
+                            frequencyDataArrays.right.map((frequencyData, index) => {
+                                visualizerCanvasContext.fillStyle = visualizerCanvasConfig.barFillColor;
+                                visualizerCanvasContext.fillRect(
+                                    visualizerCanvas.width / 2,
+                                    visualizerCanvas.height - (index + 0.9) * barWidthPerFrequencyData,
+                                    frequencyData * barHeightPerDecibelValue / 2,
+                                    barWidthPerFrequencyData * 0.8
+                                );
+                            });
+                            visualizerCanvasContext.fillStyle = visualizerCanvasConfig.backgroundColor;
+                            visualizerCanvasContext.fillRect(
+                                visualizerCanvas.width / 2-1,
+                                0,
+                                2,
+                                visualizerCanvas.height
+                            );
+                            break;
+                        }
+                        default: {
+                            frequencyDataArrays.both.map((frequencyData, index) => {
+                                visualizerCanvasContext.fillStyle = visualizerCanvasConfig.barFillColor;
+                                visualizerCanvasContext.fillRect(
+                                    (index + 0.1) * barWidthPerFrequencyData,
+                                    (255-frequencyData)*barHeightPerDecibelValue,
+                                    barWidthPerFrequencyData * 0.8,
+                                    frequencyData * barHeightPerDecibelValue
+                                );
+                            });
+                            break;
+                        }
+                    }
+                    animationId = requestAnimationFrame(renderVisualizer);
+                },
+                
+                resetAudio = () => {
+                    try {
+                        audioPlayer.pause();
+                    }
+                    catch (error) {
+                        console.error(error);
+                    }
+                    resetVisualizer();
+                    showMessage('Now loading ...');
+                };
+            
+            audioFileReader.updateDisplayType = (specifiedDisplayType) => {
+                displayType = specifiedDisplayType;
+            };
+            
+            audioFileReader.startReadFile = (targetFile) => {
+                resetAudio();
+                performance.mark('read:begin');
+                audioPlayer.src = URL.createObjectURL(targetFile);
+                performance.mark('read:end');
+                performance.measure('read', 'read:begin', 'read:end');
+                console.log(`(*) read: ${extRound(performance.getEntriesByName('read')[ 0 ].duration, 3)}ms`);
+                performance.clearMeasures(); performance.clearMarks();
+                try {
+                    audioPlayer.play();
+                }
+                catch (error) {
+                    console.error(error);
+                    showMessage('Ready to play');
+                }
+            };
+            
+            audioPlayer.addEventListener('play', (event) => {
+                console.log('"play" event', event);
+                resetVisualizer();
+                audioNodeController.updateConnections();
+                animationId = requestAnimationFrame(renderVisualizer);
+            });
+            
+            showMessage('Drop audio file here');
+            
+            return {audioFileReader};
+        })({visualizerCanvas, audioPlayer}),
+        
+        {audioFileInput} = (({audioFileReader}) => {
+            const
+                audioFileInput = document.querySelector('[name="audiofile"]');
+            
+            audioFileInput.addEventListener('change', (event) => {
+                audioFileReader.startReadFile(event.target.files[0]);
+            });
+            return {audioFileInput};
+        })({audioFileReader}),
+        
+        {audioFileDropArea} = (({audioFileInput}) => {
+            const
+                audioFileDropArea = document.querySelector('#visualizer');
+            
+            audioFileDropArea.addEventListener('dragover', (event) => {
+                event.stopPropagation();
+                event.preventDefault();
+            });
+            audioFileDropArea.addEventListener('drop', (event) => {
+                event.stopPropagation();
+                event.preventDefault();
+                const
+                    targetFiles = (event.dataTransfer || even.target).files;
+                 
+                audioFileInput.files = targetFiles;
+                audioFileReader.startReadFile(targetFiles[0]);
+            });
+            return {audioFileDropArea};
+        })({audioFileInput}),
+        
+        {displayTypeRadioButtons} = (({audioFileReader}) => {
+            const
+                displayTypeRadioButtons = Array.from(document.querySelectorAll('[name="displaytype"]')).map(displayTypeRadioButton => {
+                    displayTypeRadioButton.addEventListener('change', (event) => {
+                        if (displayTypeRadioButton.checked) {
+                            audioFileReader.updateDisplayType(displayTypeRadioButton.value);
+                        }
+                    });
+                    return displayTypeRadioButton;
+                });
+            
+            return {displayTypeRadioButtons};
+        })({audioFileReader});
+    
+});
+</script>
+</head>
+<body>
+
+<header>
+<h1>Audio Visualizer</h1>
+</header>
+
+<main>
+<p>
+  <label>Display type: </label>
+  <label><input type="radio" name="displaytype" value="standard" />Standard</label>
+  <label><input type="radio" name="displaytype" value="both-channels" />Both channels</label>
+</p>
+<audio id="player" src="media/n142.mp3" controls preload="metadata" crossorigin="anonymous"></audio>
+<canvas id="visualizer"></canvas>
+<p>
+  <label>Audio file: </label><wbr /><input type="file" name="audiofile" />
+</p>
+<p class="credit">Default music: "<a href="http://www.hmix.net/music_gallery/music_top.htm">Overture!</a>" by <a href="http://www.hmix.net/">H/MIX GALLERY</a></p>
+</main>
+
+</body>
+</html>

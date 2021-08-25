@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<title>Web Audio API Trial: Failure example</title>
+
+<script>
+'use strict';
+window.addEventListener('DOMContentLoaded', (event) => {
+    const
+        context = new (window.AudioContext || window.webkitAudioContext),
+        player = document.querySelector('#player'),
+        source = context.createMediaElementSource(player);
+    
+    source.connect(context.destination);
+    // この後Chrome/MS-Edge/Vivaldi等ではサウンドが再生できなくなる（Firefoxは可）
+    // [Chromeの警告] The AudioContext was not allowed to start. It must be resumed (or created) after a user gesture on the page. https://goo.gl/7K7WLu
+    // →HTMLMediaElementのcontrolsから再生もユーザー操作だと考えていたが、明確にイベントを捕まえる必要がある模様
+    console.log('Connected source to context.destination');
+});
+</script>
+</head>
+<body>
+
+<header>
+<h1>Web Audio API Trial: Failure example</h1>
+</header>
+
+<main>
+<audio id="player" src="../media/n142.mp3" controls preload="metadata" crossorigin="anonymous"></audio>
+<p class="credit">Sample music: "<a href="http://www.hmix.net/music_gallery/music_top.htm">Overture!</a>" by <a href="http://www.hmix.net/">H/MIX GALLERY</a></p>
+</main>
+
+</body>
+</html>
