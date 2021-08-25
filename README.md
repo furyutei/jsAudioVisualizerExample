@@ -6,6 +6,8 @@ JavaScriptによるAudio Visualizer実装例
 音源ファイルの再生時に周波数帯毎のレベルを表示するみたいなやつ（Visualizer）をJavaScriptでも簡単にできるらしいときいたので試してみました。  
 なんとか動きましたが、自分にとっては難しかったです……例によってブラウザやOSによってWeb Audio API（AudioContext）動作が異なるみたいですし。  
 
+![動作イメージ](https://furyutei.github.io/jsAudioVisualizerExample/img/screenshot.01.png "動作イメージ")
+
 ■ サンプル
 ---
 
